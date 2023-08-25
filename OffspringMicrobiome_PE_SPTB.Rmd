@@ -1,0 +1,1147 @@
+---
+title: Early Life Gut Microbiome in Children following Spontaneous Preterm Birth and
+  Maternal Preeclampsia
+author: "Iskander Shadid"
+date: "4/11/2023"
+output:
+  html_document: default
+  pdf_document: default
+---
+  
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.ext = '.jpeg')
+```
+
+#Required packages
+
+```{r libraries}
+library(Maaslin2)
+library(phyloseq)
+library(vegan)
+
+library(ComplexUpset)
+library(magrittr)
+library(dplyr)
+library(plyr)
+library(grid)
+library(gridExtra)
+library(ggplot2)
+library(ggpubr)
+library(tableone)
+library(Rmisc)
+library(reghelper)
+
+```
+
+#Loading the VDAART data (dataframe and phyloseq) and wrangling 
+
+```{r data}
+
+# SECTION 1. VDAART dataset DATAFRAME  ----------------------------------------------------------
+
+#### Microbial data ####
+# Load microbe data sets collapes at genus level from new Illumina 16s data from QIIME2 pipeline at all time points (n=5) and full dataset (g_all)
+load("/phyloseq_M3_tax.rda") # 3-6 months
+load("/phyloseq_Y1_tax.rda") # 1 year
+load("/phyloseq_Y3_tax.rda") # 3 year
+load("/phyloseq_Y4_tax_genus.rda") # 4 year
+load("/phyloseq_Y5_tax.rda") # 5 year
+load("/FinalV2_g_all.rda") # all years together
+
+# Unique ids used for this study
+all_unique <- dfall[!duplicated(dfall$vid),]
+all_unique <- all_unique[!is.na(all_unique$vid),]
+
+#### Meta data ####
+# load metadata 
+db <- read.csv("/jama2016tab2.csv")
+vdaartbirth <- read.csv("/vdaartbirth.csv")
+PE_metadata <- read.csv("/peanalysis.csv", stringsAsFactors=FALSE, header=TRUE) #n=816
+enroll <- read.csv("/EnrollMaternal.csv")
+load("/OG806vids.rda") # vID's used in total VDAART #806
+
+# merge all ids with metadata
+tomerge1 <- merge(asthma.df, 
+                  db[,c("vid","delgestage","m6breastfed","trmt")],
+                  stringsAsFactors=FALSE, header=TRUE, 
+                  by="vid", all.x = T) 
+
+tomerge2 <- merge(tomerge1, 
+                  vdaartbirth[,c("vid","modedelivery","comlabor","pihghtn","pprom","prom","pretermdelivery","antibiotic", "bweight")],
+                  stringsAsFactors=FALSE, header=TRUE, 
+                  by="vid", all.x = T) 
+
+tomerge3 <- merge(tomerge2, 
+                  PE_metadata[,c("vid","pefull")],
+                  stringsAsFactors=FALSE, header=TRUE, 
+                  by="vid", all.x = T) 
+
+# final dataset 
+all806 <- tomerge3
+
+# modify metadata columns 
+
+#race
+all806$craceeth[all806$craceeth=="African American (Hispanic and Non-Hispanic)"]<-"Black, African American"
+all806$craceeth[all806$craceeth=="Caucasian (Hispanic)"]<-"Caucasian"
+all806$craceeth[all806$craceeth=="Caucasian (Non-Hispanic)"]<-"Caucasian"
+
+# maternal education
+all806$grad[all806$meducation=="College graduate"]<-"College or higher"
+all806$grad[all806$meducation=="Graduate school"]<-"College or higher"
+all806$grad[all806$meducation=="Technical school"]<-"Not a college graduate"
+all806$grad[all806$meducation=="Graduated from high school"]<-"Not a college graduate"
+all806$grad[all806$meducation=="Junior college/some college"]<-"Not a college graduate"
+all806$grad[all806$meducation=="Did not graduate from high school"]<-"Not a college graduate"
+
+# maternal income 
+all806$income[all806$mincome=="$100,000 - $149,999"]<-"Over $50,000"
+all806$income[all806$mincome=="$50,000 - $74,999"]<-"Over $50,000"
+all806$income[all806$mincome=="$75,000 - $99,999"]<-"Over $50,000"
+all806$income[all806$mincome=="Over $150,000"]<-"Over $50,000"
+all806$income[all806$mincome=="$30,000 - $49,999"]<-"Less than $50,000"
+all806$income[all806$mincome=="Less than $30,000"]<-"Less than $50,000"
+all806$income[all806$mincome=="Do not know"]<-"Do not know/prefer not to answer"
+all806$income[all806$mincome=="Prefer not to answer"]<-"Do not know/prefer not to answer"
+
+# preeclampsia
+all806$preeclampsia[all806$pefull==1]<-"Yes"
+all806$preeclampsia[all806$pefull==0]<-"No"
+
+# csection
+all806$Csection <- ifelse(all806$modedelivery=="C-section", "Yes", "No")
+table(all806$Csection)
+
+# marital status 
+all806$married[!all806$mmaritalstatus=="Married"]<-"Not Married (Separated or Divorced)"
+all806$married[all806$mmaritalstatus=="Married"]<-"Married"
+
+# sPTB <<<< 4 erroneous ID's <-- change to sPTB==No
+all806$sPTB=ifelse(all806$pretermdelivery=="Yes" & all806$comlabor=="Spontaneous", "Yes","No")
+all806$mage_30[all806$mage>=30]<-">=30"
+all806$mage_30[all806$mage<30]<-"<30"
+table(all806$sPTB)
+
+#fix ID's
+all806$sPTB <- ifelse(all806$sPTB=="Yes" & all806$preeclampsia== "Yes", "No", all806$sPTB)
+table(all806$sPTB)
+#
+all806$pe_and_preterm=ifelse(all806$pefull==1 & all806$pretermdelivery=="Yes", "Yes","No")
+all806$pe_no_preterm=ifelse(all806$pefull==1 & all806$pretermdelivery=="No", "Yes","No")
+all806$antibiotic[all806$antibiotic=="Do not know"]<-NA
+
+all806$sptb_and_pprom <- ifelse(all806$sPTB=="Yes" & all806$pprom=="Yes", "Yes","No")
+all806$sptb_no_pprom <- ifelse(all806$sPTB=="Yes" & all806$pprom=="No", "Yes","No")
+
+all806$GA_U37wks <- ifelse(all806$delgestagewks < 37 & all806$delgestagewks >= 34, "Yes", "No")
+all806$GA_U34wks <- ifelse(all806$delgestagewks < 34, "Yes", "No")
+
+# Mark included(n=671)/excluded(n=134)
+all806$microbiome <- 0
+all806$microbiome[all806$vid%in%all_unique$vid] <- 1
+
+# missing to na 
+all806$m6breastfed <- ifelse(all806$m6breastfed=="", NA, all806$m6breastfed)
+all806$antibiotic[all806$antibiotic==""] <- NA
+
+# separate variable for missing data to use in Table 1
+all806$bfmis <- ifelse(is.na(all806$m6breastfed), "Yes", "No")
+all806$antimis <- ifelse(is.na(all806$antibiotic), "Yes", "No")
+
+# add birthweight category
+all806$bwcat <- ifelse(all806$bweight>= 2500, "Normal", 
+                       ifelse(all806$bweight <2500, "Underweight", NA))
+
+#### Merge microbial and metadata ####
+# Merge with microbes
+db36 <- M3_FF %>% merge(y=all806, by="vid")
+db1 <- Y1_FF %>% merge(y=all806, by="vid")
+db3 <- Y3_FF %>% merge(y=all806, by="vid")
+db4 <- Y4_FF %>% merge(y=all806, by="vid")
+db5 <- Y5_FF %>% merge(y=all806, by="vid")
+
+# Add column with exact age at stool sample collection for the infants at 3-6 months:
+
+# Merge in ages at stool sample collection for infants 
+stooldate <- read.csv("/udd/reish/Microbiome/DATA/ttrimdietm6ffsamp.csv")
+x<-c("vid","childm3ffdate")
+stooldate<-subset(stooldate, select=x)
+
+# Merge in delivery date
+epi1 <- read.csv("/proj/stvtds/stvtd00/FINAL_datasets/babyracen819.csv")
+x<-c("vid","deliverydate")
+epi1<-subset(epi1, select=x)
+
+# Merge delivery date in with stool collection date
+meta <- merge(epi1, stooldate, by="vid", all.x=TRUE)
+
+### for 7 subjects, birthdate and stool collection date missing
+### use Excel sheet from Leanna to add these dates
+meta$childm3ffdate <- as.character(meta$childm3ffdate)
+meta$childm3ffdate[meta$vid == "319874"] <- "06/21/2011"
+meta$childm3ffdate[meta$vid == "326992"] <- "06/17/2011"
+meta$childm3ffdate[meta$vid == "347595"] <- "02/29/2012"
+meta$childm3ffdate[meta$vid == "357032"] <- "06/15/2011"
+meta$childm3ffdate[meta$vid == "371573"] <- "04/13/2011"
+meta$childm3ffdate[meta$vid == "380436"] <- "10/30/2011"
+meta$childm3ffdate[meta$vid == "382772"] <- "09/13/2011"
+
+# Create an age variable (stool sample collection date minus delivery date)
+meta$stooldate<-as.Date(paste(meta$childm3ffdate), format = "%m/%d/%Y")
+meta$ddate<-as.Date(meta$deliverydate, format = "%m/%d/%Y")
+meta$age<-(meta$stooldate-meta$ddate)/365.25 # In years
+meta$age<-as.numeric(meta$age)
+
+# add age & time column
+db36 <- db36 %>% merge(y=meta[,c("vid","age")], by="vid")
+db1$age <- 1
+db3$age <- 3
+db4$age <- 4
+db5$age <- 5
+
+# save datasets 
+#getwd()
+#save(db36, file="finalV2_g_m3.rda")
+#save(db1, file="finalV2_g_y1.rda")
+#save(db3, file="finalV2_g_y3.rda")
+#save(db4, file="finalV2_g_y4.rda")
+#save(db5, file="finalV2_g_y5.rda")
+
+# create one merged data set
+M3Y1 <- rbind(db36, db1)
+M3Y1Y3 <- rbind(M3Y1, db3)
+M3Y1Y3Y4 <- rbind(M3Y1Y3, db4)
+dfall <- rbind(M3Y1Y3Y4, db5)
+
+# Remove entirely empty microbe columns if any
+nonnum <- names(dfall[,c(1:3, 405:463)])
+numcols <- names(dfall[,c(4:404)])
+cols_to_keep <- colSums(dfall[,numcols]) != 0 
+dfall <- dfall[, c(nonnum, numcols[cols_to_keep])]
+# Remove ID's with zero counts for all microbes if any
+del <- rowSums(dfall[63:437]) == 0
+dfall <- dfall[!del, ]
+
+# save dataset
+#save(dfall, file="/FinalV2_g_all.rda")
+
+# SECTION 2. VDAART dataset PHYLOSEQ  ----------------------------------------------------------
+
+#### Microbial data ####
+#load phyloseq objects 
+data <- readRDS("/data_g.rds") # genus collapsed phyloseq from QIIME2_Pipeline
+
+# pull rownames and make rowname column
+sam_data(data)$rname <- rownames(sam_data(data))
+
+# keep as separate reference dataframe to merge later
+phylo_rows <- data.frame( sam_data(data)[,c("vid", "rname", "COLLECTION")])
+
+#### Meta data ####
+meta_phylo <- all806
+
+# add exact age data
+meta_phylo <- meta_phylo %>% merge(y=meta[,c("vid","age")], by="vid")
+
+#### Merge microbial and metadata ####
+# merge phyloseq rownames reference dataframe with metadata
+df <- phylo_rows %>% merge(y=meta_phylo, by="vid")
+rownames(df) <- df$rname
+
+# adjust sampling time point category 
+df$Time <- ifelse(df$COLLECTION == "Fecal Flora Collection month 3", "3-6 Months",
+                   ifelse(df$COLLECTION == "Year 1 FF Collection", "1 Year",
+                          ifelse(df$COLLECTION == "Year 3 FF Collection", "3 Years",
+                                 ifelse(df$COLLECTION == "C4-Year 4 FF Collection", "4 Years",
+                                        ifelse(df$COLLECTION == "C5-Year 5 FF Collection", "5 Years", NA)))))
+df$Time <- factor(df$Time, levels = c("3-6 Months", "1 Year", "3 Years", "4 Years", "5 Years"))
+
+# Turn into new `sample_data` 
+sam.new <- sample_data(df)
+
+# Merge with original phyloseq object
+df <- merge_phyloseq(data, sam.new)
+
+# save phyloseq object now including new metadata
+#saveRDS(df, "/phylo_finalV2.rds")
+
+```
+
+# Table 1. Characteristics and comparisons of subgroups included in the study.  
+
+```{r tab1}
+
+# Select only inlcuded study subjects 
+mb <- subset(all806, microbiome==1)
+mb$cats <- ifelse(mb$preeclampsia=="Yes", "Preeclampsia", 
+                  ifelse(mb$sPTB=="Yes", "sPTB","Normal"))
+table(mb$cats)
+
+# variables
+vars=c("mage","sitename","craceeth", "antibiotic" , "antimis", "income","married", "cgender", "masthma", "preeclampsia", "pe_and_preterm", "pe_no_preterm","trmt", "sPTB","sptb_and_pprom","sptb_no_pprom","delgestagewks","GA_U37wks" , "GA_U34wks","Csection","m6breastfed", "bfmis","pretermdelivery","pihghtn","pprom", "grad", "bweight", "bwcat")
+
+# create and print table 
+tableOne <- CreateTableOne(vars = vars, strata = "cats", data = mb)
+tableOneExport=print(tableOne, quote = F, noSpaces = TRUE, showAllLevels = T, na.rm=T)
+
+```
+
+# Table 2. MAASLIN2 analysis of main phenotypes 
+
+```{r tab2}
+
+# Factor child's race
+dfall$craceeth <- factor(dfall$craceeth, levels = c("Black, African American",
+                                                    "Caucasian",
+                                                    "Other"))
+
+prevalence_percentage <- colSums(dfall[63:437] != 0) / nrow(dfall) * 100
+quantile(prevalence_percentage) 
+#        0%         25%         50%         75%        100% 
+#0.06031363  0.18094089  1.38721351 10.01206273 95.11459590 
+# set to 0.2%
+
+# run maaslin2 model ZINB with random effects for all time points (dfall)
+# main phenotypes
+
+Maaslin2(dfall[63:437],
+         dfall[,c("vid", "preeclampsia","sPTB","antibiotic","Csection", "cgender", "m6breastfed", "sitename", "age", "craceeth")],
+         "/udd/reish/Microbiome/DATA",
+         min_abundance = 0.001,
+         min_prevalence = 0.002,
+         normalization = "TMM",
+         transform = "NONE",
+         analysis_method = "ZINB",
+         max_significance = 0.7,
+         random_effects =c("vid", "sitename"),
+         fixed_effects =  c("preeclampsia","sPTB","antibiotic","Csection", "cgender", "m6breastfed", "age", "craceeth"),
+         reference = c("craceeth,Black, African American"),
+         correction = "BH",
+         standardize = TRUE,
+         cores = 1,
+         plot_heatmap = TRUE,
+         plot_scatter = TRUE,
+         heatmap_first_n = 50)
+
+```
+
+# Table 3. MAASLIN2 analysis of SUB phenotypes 
+
+```{r tab3}
+
+# run maaslin2 model ZINB with random effects for all time points (dfall)
+# subphenotypes
+Maaslin2(
+  dfall[63:437],
+  dfall[,c("vid", "pe_and_preterm","pe_no_preterm","sptb_and_pprom","sptb_no_pprom",
+           "antibiotic","Csection", "cgender", "m6breastfed", "sitename", "age", "craceeth")],
+  "/Users/iskandershadid/Microbiome/Merged/all_wRace/Vid_site_secondary",
+  min_abundance = 0.001,
+  min_prevalence = 0.002,
+  normalization = "TMM",
+  transform = "NONE",
+  analysis_method = "ZINB",
+  max_significance = 0.7,
+  random_effects =c("vid", "sitename"),
+  fixed_effects =  c("pe_and_preterm","pe_no_preterm","sptb_and_pprom",
+                     "sptb_no_pprom","antibiotic","Csection", "cgender", "m6breastfed", "age", "craceeth"),
+  reference = c("craceeth,Black, African American"),
+  correction = "BH",
+  standardize = TRUE,
+  cores = 1,
+  plot_heatmap = TRUE,
+  plot_scatter = TRUE,
+  heatmap_first_n = 50)
+
+```
+
+# Figure 2. Infant gut microbiome diversity trajectories from birth to age 5 years. 
+
+```{r fig2}
+#### ALPHA DIVERSITY ####
+
+## trim data 
+# Months 3-6
+M3 <- db36
+nonnum <- names(M3[,c(1:3, 405:463)])
+numcols <- names(M3[,c(4:404)])
+cols_to_keep <- colSums(M3[,numcols]) != 0 
+M3 <- M3[, c(nonnum, numcols[cols_to_keep])]
+
+# year 1
+Y1 <- db1
+nonnum <- names(Y1[,c(1:3, 405:463)])
+numcols <- names(Y1[,c(4:404)])
+cols_to_keep <- colSums(Y1[,numcols]) != 0 
+Y1 <- Y1[, c(nonnum, numcols[cols_to_keep])]
+
+# year 3
+Y3 <- db3
+nonnum <- names(Y3[,c(1:3, 405:463)])
+numcols <- names(Y3[,c(4:404)])
+cols_to_keep <- colSums(Y3[,numcols]) != 0 
+Y3 <- Y3[, c(nonnum, numcols[cols_to_keep])]
+
+# year 4 
+Y4 <- db4
+nonnum <- names(Y4[,c(1:3, 405:463)])
+numcols <- names(Y4[,c(4:404)])
+cols_to_keep <- colSums(Y4[,numcols]) != 0 
+Y4 <- Y4[, c(nonnum, numcols[cols_to_keep])]
+
+# year 5
+Y5 <- db5
+nonnum <- names(Y5[,c(1:3, 405:463)])
+numcols <- names(Y5[,c(4:404)])
+cols_to_keep <- colSums(Y5[,numcols]) != 0 
+Y5 <- Y5[, c(nonnum, numcols[cols_to_keep])]
+
+# alpha diversity 
+M3$alpha_shan <- diversity(M3[63:272],MARGIN = 1,index = "shannon") # 3-6 months
+Y1$alpha_shan <- diversity(Y1[63:333],MARGIN = 1,index = "shannon") # year 1
+Y3$alpha_shan <- diversity(Y3[63:355],MARGIN = 1,index = "shannon") # year 3
+Y4$alpha_shan <- diversity(Y4[63:338],MARGIN = 1,index = "shannon") # year 4
+Y5$alpha_shan <- diversity(Y5[63:311],MARGIN = 1,index = "shannon") # year 5
+
+# Merge data form all time points now including alpha diversity
+dfall <- rbind(M3[,c(1:62, 273)], Y1[,c(1:62,334)], 
+               Y3[,c(1:62,356)], Y4[,c(1:62,339)], Y5[,c(1:62, 312)])
+
+# Time point category
+dfall$Time <- ifelse(dfall$age < 1, "3-6 Months",
+                     ifelse(dfall$age == 1, "1 Year",
+                            ifelse(dfall$age == 3, "3 Years",
+                                   ifelse(dfall$age == 4, "4 Years",
+                                          ifelse(dfall$age == 5, "5 Years", NA)))))
+dfall$Time <- factor(dfall$Time, levels = c("3-6 Months", "1 Year", "3 Years", "4 Years", "5 Years"))
+table(dfall$Time)
+
+
+## Alpha Plots
+
+# PE
+# Standard error calculation PE
+dfall_plot_pe_shan <- summarySE(dfall[dfall$preeclampsia=="Yes",], measurevar = "alpha_shan", groupvars = "Time")
+dfall_plot_pe_shan$div <- "shan"
+colnames(dfall_plot_pe_shan)[3] <- "alpha"
+dfall_plot_pe_shan$Preeclampsia <- "Yes"
+
+# Standard error calculation NO PE
+dfall_plot_no_pe_shan <- summarySE(dfall[dfall$preeclampsia=="No",], measurevar = "alpha_shan", groupvars = "Time")
+dfall_plot_no_pe_shan$div <- "shan"
+colnames(dfall_plot_no_pe_shan)[3] <- "alpha"
+dfall_plot_no_pe_shan$Preeclampsia <- "No"
+
+# Bind PE 
+dfall_plot_pe <- rbind(dfall_plot_pe_shan, dfall_plot_no_pe_shan)
+dfall_plot_pe <- dfall_plot_pe[!is.na(dfall_plot_pe$Time),]
+
+# SPTB
+# Standard error calculation SPTB
+dfall_plot_sptb_shan <- summarySE(dfall[dfall$sPTB=="Yes",], measurevar = "alpha_shan", groupvars = "Time")
+dfall_plot_sptb_shan$div <- "shan"
+colnames(dfall_plot_sptb_shan)[3] <- "alpha"
+dfall_plot_sptb_shan$sPTB <- "Yes"
+
+# Standard error calculation NO SPTB
+dfall_plot_no_sptb_shan <- summarySE(dfall[dfall$sPTB=="No",], measurevar = "alpha_shan", groupvars = "Time")
+dfall_plot_no_sptb_shan$div <- "shan"
+colnames(dfall_plot_no_sptb_shan)[3] <- "alpha"
+dfall_plot_no_sptb_shan$sPTB <- "No"
+
+# Bind SPTB
+dfall_plot_sptb <- rbind(dfall_plot_sptb_shan, dfall_plot_no_sptb_shan)
+dfall_plot_sptb <- dfall_plot_sptb[!is.na(dfall_plot_sptb$Time),]
+
+
+# Plot alpha diversity PE
+pe <- ggplot(dfall_plot_pe[dfall_plot_pe$div=="shan",], aes(x=Time, y=alpha, col=Preeclampsia, group=Preeclampsia))+
+  geom_errorbar(aes(ymin=alpha-se, ymax=alpha+se), width =.1)+
+  geom_point()+
+  geom_line()+
+  theme_bw()+
+  labs(tag = "(A)")+
+  xlab("\nSampling Time")+
+  ylab("Shannon Index\n")+
+  scale_color_manual(values=c("#386CB0","#F0027F"),
+                     name="Preeclampsia",
+                     breaks=c("No","Yes"),
+                     labels=c("No","Yes"))+
+  theme_classic()+
+  theme(legend.position=c(0.8,0.3),
+        plot.tag.position =  c(0.01,1.1),
+        plot.tag = element_text(face="bold"),
+        text=element_text(size=14))
+
+# Plot alpha diversity SPTB
+sptb <- ggplot(dfall_plot_sptb[dfall_plot_sptb$div=="shan",], aes(x=Time, y=alpha, col=sPTB, group=sPTB))+
+  geom_errorbar(aes(ymin=alpha-se, ymax=alpha+se), width =.1)+
+  geom_point()+
+  geom_line()+
+  theme_bw()+
+  labs(tag = "(B)")+
+  xlab("\nSampling Time")+
+  ylab("Shannon Index\n")+
+  scale_color_manual(values=c("#7FC97F","#FDC086"),
+                     name="Spontaneous\nPreterm Birth",
+                     breaks=c("No","Yes"),
+                     labels=c("No","Yes"))+
+  theme_classic()+
+  theme(legend.position=c(0.8,0.35),
+        text=element_text(size=14),
+        plot.tag.position =  c(0.01,1.1),
+        plot.tag = element_text(face="bold"),
+        legend.background = element_rect(fill="transparent"))
+
+# Arrange plots 
+plot_alpha <- ggarrange(pe, sptb, nrow=2, ncol=1)
+
+#### Beta Diversity ##### 
+
+# Remove 0 IDs & Maternal samples
+df <- subset_samples(df, sample_sums(df) > 0)
+df <- subset_samples(df, COLLECTION!="Mother FF Third Trimester")
+
+# Split data by time points
+age0.5 <- subset_samples(df, Time == "3-6 Months")
+age1 <- subset_samples(df, Time == "1 Year")
+age3 <- subset_samples(df, Time == "3 Years")
+age4 <- subset_samples(df, Time == "4 Years")
+age5 <- subset_samples(df, Time == "5 Years")
+
+# Split data by phenotypes
+pe.df <-  subset_samples(df, preeclampsia=="Yes")
+sptb.df <-  subset_samples(df, sPTB=="Yes")
+health <-  subset_samples(df, preeclampsia=="No" & sPTB == "No")
+
+## Create PCOA plot
+
+# Ordinate all subjects
+data_all<- ordinate(
+  physeq = df, 
+  method = "PCoA", 
+  distance = "bray")
+
+# switch PE axis (*-1)
+data_all[c("vectors")] <- lapply(data_all[c("vectors")], 
+                                 function(x) {x[,"Axis.1"] <- x[,"Axis.1"] * -1
+                                 x})
+# Ordinate PE subjects
+data_pe<- ordinate(
+  physeq = pe.df, 
+  method = "PCoA", 
+  distance = "bray")
+
+# Ordinate SPTB subjects
+data_sptb<- ordinate(
+  physeq = sptb.df, 
+  method = "PCoA", 
+  distance = "bray")
+
+# switch Pe axis (*-1)
+data_sptb[c("vectors")] <- lapply(data_sptb[c("vectors")], 
+                                  function(x) {x[,"Axis.1"] <- x[,"Axis.1"] * -1
+                                  x})
+# Ordinate control (healthy) subjects
+data_health<- ordinate(
+  physeq = health, 
+  method = "PCoA", 
+  distance = "bray")
+
+# switch Pe axis (*-1)
+data_health[c("vectors")] <- lapply(data_health[c("vectors")], 
+                                    function(x) {x[,"Axis.1"] <- x[,"Axis.1"] * -1
+                                    x})
+
+# Plot PCoA with age color-coded ALL Subjects
+plotall <- plot_ordination(
+  physeq = df,
+  ordination = data_all,
+  color = "COLLECTION",
+  title = "Fecal Microbiome Beta Diversity\n(Bray-Curtis Dissimilarity) Over Early Life Course")+ 
+  scale_color_manual(values = c("#FDE725FF","#95D840FF","#1F968BFF","darkorchid4", "#FF5F15" ),
+                     name="Age at Stool Sample\nCollection",
+                     breaks=c("Fecal Flora Collection month 3","Year 1 FF Collection","Year 3 FF Collection","C4-Year 4 FF Collection","C5-Year 5 FF Collection" ),
+                     labels=c("3-6 Months","1 Year","3 Years","4 Years", "5 Years")) +
+  geom_point(aes(color = COLLECTION), alpha = 0.5, size = 3) +
+  theme_classic() +
+  labs(tag = "(C)")+
+  theme(legend.position=c(0.2,0.9),
+        text=element_text(size=14),
+        legend.background = element_rect(fill="transparent"), 
+        plot.title = element_text(vjust = 7, size=20),
+        plot.margin = margin(0.8,0,0,0, unit="cm"),
+        plot.tag.position =  c(0.01,1.075),
+        plot.tag = element_text(face="bold"),)+
+  xlab("PCo1")+
+  ylab("PCo2")
+plotall
+
+# Plot PCoA with age color-coded CONTROL Subjects
+plot_health<- plot_ordination(
+  physeq = health,
+  ordination = data_health,
+  color = "COLLECTION",
+  title = "Normal pregnancy (n=1397)"
+)   + 
+  scale_color_manual(values = c("#FDE725FF","#95D840FF","#1F968BFF","darkorchid4", "#FF5F15" ),
+                     name="Age at Stool Sample\nCollection",
+                     breaks=c("Fecal Flora Collection month 3","Year 1 FF Collection","Year 3 FF Collection","C4-Year 4 FF Collection","C5-Year 5 FF Collection" ),
+                     labels=c("3-6 Months","1 Year","3 Years","4 Years", "5 Years")) +
+  geom_point(aes(color = COLLECTION), alpha = 0.5, size = 3) +
+  theme_classic() +
+  theme(legend.position="none", plot.title = element_text(size=15))+
+  xlab("Pco1")+
+  ylab("Pco2")
+
+# Plot PCoA with age color-coded PE Subjects
+plot_pe <- plot_ordination(
+  physeq = pe.df,
+  ordination = data_pe,
+  color = "COLLECTION",
+  title = "Preeclampsia (n=162)"
+)   + 
+  scale_color_manual(values = c("#FDE725FF","#95D840FF","#1F968BFF","darkorchid4", "#FF5F15" ),
+                     name="Age at Stool Sample\nCollection",
+                     breaks=c("Fecal Flora Collection month 3","Year 1 FF Collection","Year 3 FF Collection","C4-Year 4 FF Collection","C5-Year 5 FF Collection" ),
+                     labels=c("3-6 Months","1 Year","3 Years","4 Years", "5 Years")) +
+  geom_point(aes(color = COLLECTION), alpha = 0.5, size = 3) +
+  theme_classic() +
+  theme(legend.position="none", plot.title = element_text(size=15))+
+  xlab("Pco1")+
+  ylab("Pco2")
+
+# Plot PCoA with age color-coded SPTB Subjects
+plot_sptb <- plot_ordination(
+  physeq = sptb.df,
+  ordination = data_sptb,
+  color = "COLLECTION",
+  title = "Spontaneous preterm birth (n=105) "
+)   + 
+  scale_color_manual(values = c("#FDE725FF","#95D840FF","#1F968BFF","darkorchid4", "#FF5F15" ),
+                     name="Age at Stool Sample\nCollection",
+                     breaks=c("Fecal Flora Collection month 3","Year 1 FF Collection","Year 3 FF Collection","C4-Year 4 FF Collection","C5-Year 5 FF Collection" ),
+                     labels=c("3-6 Months","1 Year","3 Years","4 Years", "5 Years")) +
+  geom_point(aes(color = COLLECTION), alpha = 0.5, size = 3) +
+  theme_classic() +
+  theme(
+    legend.position="none", plot.title = element_text(size=15))+
+  xlab("Pco1")+
+  ylab("Pco2")
+
+# Arrange Beta Diversity plots 
+plot_beta <- ggarrange(plotall, ggarrange(plot_health, plot_pe, plot_sptb, ncol=3), nrow=2)
+
+# Arrange Alpha and Beta Diversity plots 
+plot_alpha_beta <- ggarrange(ggarrange(pe, sptb, nrow=2), plotall, ggarrange(plot_health, plot_pe, plot_sptb, nrow=3), ncol=3, 
+                  widths = c(0.6, 0.9, 0.4))+
+  theme(plot.margin = margin(1.5,0.1,0.1,0.1, "cm")) 
+plot_alpha_beta
+```
+
+# Figure 3. MAASLIN2 Heatmap of main phenotypes, breastfeeding and mode of delivery
+
+```{r fig3}
+# Load results from MAASLIN2 analysis of main phenotypes 
+mydf <- read.table("/udd/reish/Microbiome/DATA/significant_results.tsv"
+                   , sep = '\t', header = TRUE)
+
+# Subset data, removing subjects with less than 10 counts for a microbe, removing extra predictors and select significant q values
+mydf <- subset(mydf, N.not.0>=10)
+mydf <- subset(mydf, metadata!="age")
+mydf <- subset(mydf, metadata!="cgender")
+mydf <- subset(mydf, metadata!="craceeth")
+mydf <- subset(mydf, metadata!="antibiotic")
+mydf <- subset(mydf, qval<0.05)
+
+# Maaslin2 heatmap
+maaslin2_heatmap <-
+  function(
+    output_results,
+    title = NA,
+    cell_value = 'qval',
+    data_label = 'data',
+    metadata_label = 'metadata',
+    border_color = 'grey93',
+    color = colorRampPalette(c("blue", "grey90", "red")),
+    col_rotate = 90,
+    first_n = 35) {
+    
+    # read MaAsLin output
+    df <- mydf
+    
+    title_additional <- ""
+    
+    title_additional <- ""
+    if (!is.na(first_n) & first_n > 0 & first_n < dim(df)[1]) {
+      if (cell_value == 'coef') {
+        df <- df[order(-abs(df[[cell_value]])) , ]
+      } else{
+        df <- df[order(df[[cell_value]]), ]
+      }
+      # get the top n features with significant associations
+      df_sub <- df[1:first_n,]
+      for (first_n_index in seq(first_n, dim(df)[1]))
+      {
+        if (length(unique(df_sub$feature)) == first_n)
+        {
+          break
+        }
+        df_sub <- df[1:first_n_index,]
+      }
+      # get all rows that have the top N features
+      df <- df[which(df$feature %in% df_sub$feature),]
+      title_additional <- paste("Top", first_n, sep=" ")
+    }
+    
+    if (dim(df)[1] < 2) {
+      print('There are no associations to plot!')
+      return(NULL)
+    }
+    
+    metadata <- df$metadata
+    data <- df$feature
+    dfvalue <- df$value
+    value <- NA
+    
+    # values to use for coloring the heatmap
+    # and set the colorbar boundaries
+    if (cell_value == "pval") {
+      value <- -log(df$pval) * sign(df$coef)
+      value <- pmax(-20, pmin(20, value))
+      if (is.null(title))
+        title <- "(-log(pval)*sign(coeff))"
+    } else if (cell_value == "qval") {
+      value <- -log(df$qval) * sign(df$coef)
+      value <- pmax(-20, pmin(20, value))
+      if (is.null(title))
+        title <- "(-log(qval)*sign(coeff))"
+    } else if (cell_value == "coef") {
+      value <- df$coef
+      if (is.null(title))
+        title <- "(coeff)"
+    }
+    
+    if (title_additional!="") {
+      title <- paste(title_additional, "features with significant associations", title, sep=" ")
+    } else {
+      title <- paste("Significant associations", title, sep=" ")
+    }
+    
+    # identify variables with more than one level present
+    verbose_metadata <- c()
+    metadata_multi_level <- c()
+    for (i in unique(metadata)) {
+      levels <- unique(df$value[df$metadata == i])
+      if (length(levels) > 1) {
+        metadata_multi_level <- c(metadata_multi_level, i)
+        for (j in levels) {
+          verbose_metadata <- c(verbose_metadata, paste(i, j))
+        }
+      } else {
+        verbose_metadata <- c(verbose_metadata, i)
+      }
+    }
+    
+    n <- length(unique(data))
+    m <- length(unique(verbose_metadata))
+    
+    if (n < 2) {
+      print(
+        paste(
+          "There is not enough features in the associations",
+          "to create a heatmap plot.",
+          "Please review the associations in text output file.")
+      )
+      return(NULL)
+    }
+    
+    if (m < 2) {
+      print(
+        paste(
+          "There is not enough metadata in the associations",
+          "to create a heatmap plot.",
+          "Please review the associations in text output file.")
+      )
+      return(NULL)
+    }
+    
+    a = matrix(0, nrow = n, ncol = m)
+    a <- as.data.frame(a)
+    
+    rownames(a) <- unique(data)
+    colnames(a) <- unique(verbose_metadata)
+    
+    for (i in seq_len(dim(df)[1])) {
+      current_metadata <- metadata[i]
+      if (current_metadata %in% metadata_multi_level) {
+        current_metadata <- paste(metadata[i], dfvalue[i])
+      }
+      if (abs(a[as.character(data[i]), 
+                as.character(current_metadata)]) > abs(value[i]))
+        next
+      a[as.character(data[i]), as.character(current_metadata)] <- value[i]
+    }
+    
+    # get the range for the colorbar
+    max_value <- ceiling(max(a))
+    min_value <- ceiling(min(a))
+    range_value <- max(c(abs(max_value),abs(min_value)))
+    breaks <- seq(-1*range_value, range_value, by = 1)
+    
+    p <- NULL
+    tryCatch({
+      p <-
+        pheatmap::pheatmap(
+          a,
+          cellwidth = 5,
+          cellheight = 5,
+          # changed to 3
+          main = title,
+          fontsize = 6,
+          kmeans_k = NA,
+          border = TRUE,
+          show_rownames = TRUE,
+          show_colnames = TRUE,
+          scale = "none",
+          cluster_rows = FALSE,
+          cluster_cols = TRUE,
+          clustering_distance_rows = "euclidean",
+          clustering_distance_cols = "euclidean",
+          legend = TRUE,
+          border_color = border_color,
+          color = color(range_value*2),
+          breaks = breaks,
+          treeheight_row = 0,
+          treeheight_col = 0,
+          display_numbers = matrix(ifelse(
+            a > 0.0, "+", ifelse(a < 0.0, "-", "")), nrow(a)),
+          silent = TRUE
+        )
+    }, error = function(err) {
+      logging::logerror("Unable to plot heatmap")
+      logging::logerror(err)
+    })
+    return(p)
+  }
+
+maaslin2_heatmap()
+
+```
+
+# Supplemental Table S1. Comparisons of VDAART pregnant women’s characteristics and those of their infants included and not included in this study.
+
+```{r tabS1}
+
+# variables 
+vars=c("mage","sitename","craceeth", "antibiotic", "antimis", "income","married", "cgender", "masthma","preeclampsia","pe_and_preterm", "pe_no_preterm", "trmt", "sPTB","sptb_and_pprom","sptb_no_pprom","delgestagewks","GA_U37wks" , "GA_U34wks","Csection","m6breastfed","bfmis","pretermdelivery", "pihghtn","pprom", "grad", "bweight", "bwcat")
+
+# plot table
+tableOne <- CreateTableOne(vars = vars, strata = "microbiome", data = all806)
+tableOneExport=print(tableOne, quote = F, noSpaces = TRUE, showAllLevels = T, na.rm=T)
+
+```
+
+# Supplemental Table S2. Associations of alpha diversity (Shannon Index) with preeclampsia (PE) and spontaneous preterm birth (sPTB). 
+
+```{r tabS2}
+
+### Linear regression alpha diversity associations
+## Preeclampsia 
+# Crude model
+m3 <- glm(alpha_shan ~ preeclampsia  , data=M3)
+y1 <- glm(alpha_shan ~ preeclampsia  , data=Y1)
+y3 <- glm(alpha_shan ~ preeclampsia  , data=Y3)
+y4 <- glm(alpha_shan ~ preeclampsia  , data=Y4)
+y5 <- glm(alpha_shan ~ preeclampsia  , data=Y5)
+
+# Estimates, p-values and 95% confidence intervals
+cbind(rbind(coef(summary(m3))["preeclampsiaYes",c("Estimate","Pr(>|t|)")], coef(summary(y1))["preeclampsiaYes",c("Estimate","Pr(>|t|)")],     coef(summary(y3))["preeclampsiaYes",c("Estimate","Pr(>|t|)")], coef(summary(y4))["preeclampsiaYes",c("Estimate","Pr(>|t|)")], coef(summary(y5))["preeclampsiaYes",c("Estimate","Pr(>|t|)")]),
+rbind(confint(m3)[c(2,4)], confint(y1)[c(2,4)], confint(y3)[c(2,4)], confint(y4)[c(2,4)], confint(y5)[c(2,4)]))
+
+## SPTB
+# Crude model
+m3 <- glm(alpha_shan ~ sPTB  , data=M3)
+y1 <- glm(alpha_shan ~ sPTB  , data=Y1)
+y3 <- glm(alpha_shan ~ sPTB  , data=Y3)
+y4 <- glm(alpha_shan ~ sPTB  , data=Y4)
+y5 <- glm(alpha_shan ~ sPTB  , data=Y5)
+
+# Estimates, p-values and 95% confidence intervals
+cbind(rbind(coef(summary(m3))["sPTBYes",c("Estimate","Pr(>|t|)")], coef(summary(y1))["sPTBYes",c("Estimate","Pr(>|t|)")],     coef(summary(y3))["sPTBYes",c("Estimate","Pr(>|t|)")], coef(summary(y4))["sPTBYes",c("Estimate","Pr(>|t|)")], coef(summary(y5))["sPTBYes",c("Estimate","Pr(>|t|)")]),
+rbind(confint(m3)[c(2,4)], confint(y1)[c(2,4)], confint(y3)[c(2,4)], confint(y4)[c(2,4)], confint(y5)[c(2,4)]))
+
+# Adjusted models for PE and SPTB
+am3 <- glm(alpha_shan ~ preeclampsia + craceeth + m6breastfed + antibiotic + cgender + sitename + age + Csection + sPTB, data=M3) # adjusted for exact age of stool sample collection as well
+ay1 <- glm(alpha_shan ~ preeclampsia + craceeth + m6breastfed + antibiotic + cgender + sitename  + Csection+ sPTB , data=Y1)
+ay3 <- glm(alpha_shan ~ preeclampsia + craceeth + m6breastfed + antibiotic + cgender + sitename  + Csection+ sPTB , data=Y3)
+ay4 <- glm(alpha_shan ~ preeclampsia + craceeth + m6breastfed + antibiotic + cgender + sitename  + Csection+ sPTB , data=Y4)
+ay5 <- glm(alpha_shan ~ preeclampsia + craceeth + m6breastfed + antibiotic + cgender + sitename  + Csection + sPTB, data=Y5)
+
+# Estimates, p-values and 95% confidence intervals for Preeclampsia
+cbind(rbind(coef(summary(am3))["preeclampsiaYes",c("Estimate","Pr(>|t|)")], coef(summary(ay1))["preeclampsiaYes",c("Estimate","Pr(>|t|)")],     coef(summary(ay3))["preeclampsiaYes",c("Estimate","Pr(>|t|)")], coef(summary(ay4))["preeclampsiaYes",c("Estimate","Pr(>|t|)")], coef(summary(ay5))["preeclampsiaYes",c("Estimate","Pr(>|t|)")]),
+rbind(confint(am3)["preeclampsiaYes",c(1,2)], confint(ay1)["preeclampsiaYes",c(1,2)], confint(ay3)["preeclampsiaYes",c(1,2)], confint(ay4)["preeclampsiaYes",c(1,2)], confint(ay5)["preeclampsiaYes",c(1,2)]))
+
+# Estimates, p-values and 95% confidence intervals for SPTB
+cbind(rbind(coef(summary(am3))["sPTBYes",c("Estimate","Pr(>|t|)")], coef(summary(ay1))["sPTBYes",c("Estimate","Pr(>|t|)")],     coef(summary(ay3))["sPTBYes",c("Estimate","Pr(>|t|)")], coef(summary(ay4))["sPTBYes",c("Estimate","Pr(>|t|)")], coef(summary(ay5))["sPTBYes",c("Estimate","Pr(>|t|)")]),
+rbind(confint(am3)["sPTBYes",c(1,2)], confint(ay1)["sPTBYes",c(1,2)], confint(ay3)["sPTBYes",c(1,2)], confint(ay4)["sPTBYes",c(1,2)], confint(ay5)["sPTBYes",c(1,2)]))
+
+```
+
+# Supplemental Table S3. Associations of beta diversity (Bray-Curtis dissimilarity) with preeclampsia (PE) and spontaneous preterm birth (sPTB). 
+
+```{r tabS3}
+## Use Adonis PERMANOVA to test for associations of beta diversity with PE and sPTB
+
+set.seed(11)
+
+# Remove subjects with missing values on covariates, create total (_beta) and complete case dataset (beta_cc) per time point
+# total data for univariate analysis and complete case for adjusted analysis 
+# 3-6 months
+age0.5_beta <- age0.5
+age0.5_beta_cc <- subset_samples(age0.5_beta, m6breastfed!="")
+age0.5_beta_cc <- subset_samples(age0.5_beta_cc, antibiotic!="")
+# year 1
+age1_beta <- age1
+age1_beta_cc <- subset_samples(age1_beta, antibiotic!="")
+age1_beta_cc <- subset_samples(age1_beta_cc, m6breastfed!="")
+# year 3
+age3_beta <- age3
+age3_beta_cc <- subset_samples(age3_beta, antibiotic!="")
+age3_beta_cc <- subset_samples(age3_beta_cc, m6breastfed!="")
+# year 4
+age4_beta <- age4
+age4_beta_cc <- subset_samples(age4_beta, antibiotic!="")
+age4_beta_cc <- subset_samples(age4_beta_cc, m6breastfed!="")
+# year 5
+age5_beta <- age5
+age5_beta_cc <- subset_samples(age5_beta, antibiotic!="")
+age5_beta_cc <- subset_samples(age5_beta_cc, m6breastfed!="")
+
+# Calculate bray curtis distance matrix for total data and complete case data (_cc)
+# 3-6 months 
+age0.5_bray <- phyloseq::distance(age0.5_beta, method = "bray")
+age0.5_bray_cc <- phyloseq::distance(age0.5_beta_cc, method = "bray")
+# Create metadata data frame 
+sampledf0.5 <- data.frame(sample_data(age0.5_beta))
+sampledf0.5_cc <- data.frame(sample_data(age0.5_beta_cc))
+
+# Calculate bray curtis distance matrix
+# year 1
+age1_bray <- phyloseq::distance(age1_beta, method = "bray")
+age1_bray_cc <- phyloseq::distance(age1_beta_cc, method = "bray")
+# Create metadata data frame
+sampledf1 <- data.frame(sample_data(age1_beta))
+sampledf1_cc <- data.frame(sample_data(age1_beta_cc))
+
+# Calculate bray curtis distance matrix
+# year 3
+age3_bray <- phyloseq::distance(age3_beta, method = "bray")
+age3_bray_cc <- phyloseq::distance(age3_beta_cc, method = "bray")
+# Create metadata data frame
+sampledf3 <- data.frame(sample_data(age3_beta))
+sampledf3_cc <- data.frame(sample_data(age3_beta_cc))
+
+# Calculate bray curtis distance matrix
+# year 4
+age4_bray <- phyloseq::distance(age4_beta, method = "bray")
+age4_bray_cc <- phyloseq::distance(age4_beta_cc, method = "bray")
+# Create metadata data frame
+sampledf4 <- data.frame(sample_data(age4_beta))
+sampledf4_cc <- data.frame(sample_data(age4_beta_cc))
+
+# Calculate bray curtis distance matrix
+# year 5
+age5_bray <- phyloseq::distance(age5_beta, method = "bray")
+age5_bray_cc <- phyloseq::distance(age5_beta_cc, method = "bray")
+# Create metadata data frame
+sampledf5 <- data.frame(sample_data(age5_beta))
+sampledf5_cc <- data.frame(sample_data(age5_beta_cc))
+
+# Adonis test for associations between bray beta diversity and PE univariate (total data)
+adonis2(age0.5_bray ~ preeclampsia  , data = sampledf0.5) 
+adonis2(age1_bray ~ preeclampsia , data = sampledf1)  
+adonis2(age3_bray ~ preeclampsia , data = sampledf3) 
+adonis2(age4_bray ~ preeclampsia , data = sampledf4) 
+adonis2(age5_bray ~ preeclampsia , data = sampledf5) 
+
+# Adonis test for associations between bray beta diveristy and PE with covariates_cc
+adonis2(age0.5_bray_cc ~ preeclampsia + age + m6breastfed + cgender + 
+          Csection + antibiotic + craceeth +sPTB + sitename , data = sampledf0.5_cc)    
+adonis2(age1_bray_cc ~ preeclampsia+ m6breastfed + cgender + 
+          Csection + antibiotic + craceeth+sPTB + sitename, data = sampledf1_cc) 
+adonis2(age3_bray_cc ~ preeclampsia+ m6breastfed + cgender + 
+          Csection + antibiotic + craceeth+sPTB + sitename, data = sampledf3_cc) 
+adonis2(age4_bray_cc ~ preeclampsia+ m6breastfed + cgender + 
+          Csection + antibiotic + craceeth+sPTB + sitename, data = sampledf4_cc) 
+adonis2(age5_bray_cc ~ preeclampsia+ m6breastfed + cgender + 
+          Csection + antibiotic + craceeth+sPTB + sitename, data = sampledf5_cc) 
+
+# Adonis test for associations between bray beta diversity and SPTB univariate (total data)
+adonis2(age0.5_bray ~ sPTB  , data = sampledf0.5) 
+adonis2(age1_bray ~ sPTB , data = sampledf1)  
+adonis2(age3_bray ~ sPTB , data = sampledf3) 
+adonis2(age4_bray ~ sPTB , data = sampledf4) 
+adonis2(age5_bray ~ sPTB , data = sampledf5) 
+
+# Adonis test for associations between bray beta diveristy and SPTB with covariates_cc
+adonis2(age0.5_bray_cc ~ sPTB + age + m6breastfed + cgender + 
+          Csection + antibiotic + craceeth +preeclampsia + sitename , data = sampledf0.5_cc)    
+adonis2(age1_bray_cc ~ sPTB+ m6breastfed + cgender + 
+          Csection + antibiotic + craceeth+preeclampsia + sitename, data = sampledf1_cc) 
+adonis2(age3_bray_cc ~ sPTB+ m6breastfed + cgender + 
+          Csection + antibiotic + craceeth+preeclampsia + sitename, data = sampledf3_cc) 
+adonis2(age4_bray_cc ~ sPTB+ m6breastfed + cgender + 
+          Csection + antibiotic + craceeth+preeclampsia + sitename, data = sampledf4_cc) 
+adonis2(age5_bray_cc ~ sPTB+ m6breastfed + cgender + 
+          Csection + antibiotic + craceeth+preeclampsia + sitename, data = sampledf5_cc) 
+
+```
+
+
+# Supplemental Figure S1. Data intersections across all timepoints.  
+
+```{r figS1}
+
+all_unique$'3-6 Months (n=265)' <- ifelse(all_unique$vid %in% db36$vid, 1, 0)
+all_unique$'1 Year (n=436)' <- ifelse(all_unique$vid %in% db1$vid, 1, 0)
+all_unique$'3 Years (n=506)' <- ifelse(all_unique$vid %in% db3$vid, 1, 0)
+all_unique$'4 Years (n=313)' <- ifelse(all_unique$vid %in% db4$vid, 1, 0)
+all_unique$'5 Years (n=151)' <- ifelse(all_unique$vid %in% db5$vid, 1, 0)
+
+int <- colnames(all_unique)[442:438]
+
+Upsetplot <- upset(all_unique, intersect = int, name="Intersection Pattern",width_ratio=0.1,min_size=10,base_annotations=list(),
+      sort_sets=F, sort_intersections_by = "degree", encode_sets=FALSE, set_sizes = F,
+      matrix=(intersection_matrix() + 
+                annotate(geom='text', label='45', x=14, y=5.4, 
+                                               size=5 ) +
+  annotate(geom='text', label='64', x=13, y=5.4, 
+           size=5 ) +
+  annotate(geom='text', label='20', x=12, y=5.4, 
+           size=5 ) +
+  annotate(geom='text', label='38', x=11, y=5.4, 
+           size=5 ) +
+  annotate(geom='text', label='50', x=10, y=5.4, 
+           size=5 ) +
+  annotate(geom='text', label='20', x=9, y=5.4, 
+           size=5 ) +
+  annotate(geom='text', label='24', x=8, y=5.4, 
+           size=5 ) +
+  annotate(geom='text', label='57', x=7, y=5.4, 
+           size=5 ) +
+  annotate(geom='text', label='59', x=6, y=5.4, 
+           size=5 ) +
+  annotate(geom='text', label='16', x=5, y=5.4, 
+           size=5 ) +
+  annotate(geom='text', label='50', x=4, y=5.4, 
+           size=5)+
+    annotate(geom='text', label='30', x=3, y=5.4, 
+             size=5)+
+    annotate(geom='text', label='106', x=2, y=5.4, 
+             size=5)+
+    annotate(geom='text', label='34', x=1, y=5.4, 
+             size=5)+
+    annotate(geom='text', label='n=', x=0.5, y=5.4, 
+             size=5) ))+
+  geom_linerange(xmin = 0.8, xmax = 1.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 1.8, xmax = 2.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 2.8, xmax = 3.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 3.8, xmax = 4.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 4.8, xmax = 5.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 5.8, xmax = 6.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 6.8, xmax = 7.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 7.8, xmax = 8.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 8.8, xmax = 9.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 9.8, xmax = 10.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 10.8, xmax = 11.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 11.8, xmax = 12.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 12.8, xmax = 13.2 , y=5.3,  color = 'grey90')+
+  geom_linerange(xmin = 13.8, xmax = 14.2 , y=5.3,  color = 'grey90')+
+  ggtitle('Longitudinal Fecal Microbiome sampling intersections (n=672)')+
+  theme(plot.margin = unit(c(1,1,1,1), "cm"))+
+  theme(plot.title = element_text(vjust = 10))+
+  coord_cartesian(ylim = c(1, 4.7), clip = "off")+
+  expand_limits(x=14.8)
+Upsetplot
+```
+
+# Supplemental Figure S2. Infant gut microbiome diversity trajectories from birth to age 5 years color coded for breastfeeding and mode of delivery.
+
+```{r figS2}
+# Select only subjects with breastfeeding (m6breastfed) data   
+breastcc <- dfall[!is.na(dfall$m6breastfed),]
+breastcc$m6breastfed <- factor(breastcc$m6breastfed, levels = c("Yes", "No"))
+
+# Create the breastfeeding plot for PE
+plot1 <- ggplot(breastcc[breastcc$alpha_shan!=0,], aes(x = Time, y = alpha_shan, col = m6breastfed)) +
+  geom_boxplot() +
+  facet_wrap(~preeclampsia, labeller = as_labeller(c(`No` = "Preeclampsia: No", `Yes` = "Preeclampsia: Yes"))) +
+  scale_color_discrete(name = "Early Life Breastfeeding", labels = c("Yes", "No")) +
+  xlab("Offspring Age") +
+  ylab("Shannon Index") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 17),
+        axis.title.y = element_text(size = 17),
+        axis.text.x = element_text(size = 12),
+        legend.title = element_text(size = 20),
+        legend.text = element_text(size = 20),
+        strip.text = element_text(size = 17))
+
+# Create the breastfeeding plot for SPTB
+plot2 <- ggplot(breastcc[breastcc$alpha_shan!=0,], aes(x = Time, y = alpha_shan, col = m6breastfed)) +
+  geom_boxplot() +
+  facet_wrap(~sPTB, labeller = as_labeller(c(`No` = "Spontaneous Preterm Birth: No", `Yes` = "Spontaneous Preterm Birth: Yes"))) +
+  scale_color_discrete(name = "Early Life Breastfeeding", labels = c("Yes", "No")) +
+  xlab("Offspring Age") +
+  ylab("Shannon Index") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 17),
+        axis.title.y = element_text(size = 17),
+        axis.text.x = element_text(size = 12),
+        legend.position = "none",
+        strip.text = element_text(size = 17))
+
+# Select only subjects with mode of delivery (Csection) data   
+cseccc <- dfall[!is.na(dfall$Csection),]
+cseccc$Csection <- factor(cseccc$Csection, levels = c("No", "Yes"))
+
+# Create the Csection plot for PE
+plot3 <- ggplot(cseccc[cseccc$alpha_shan!=0,], aes(x = Time, y = alpha_shan, col = Csection)) +
+  geom_boxplot() +
+  facet_wrap(~preeclampsia, labeller = as_labeller(c(`No` = "Preeclampsia: No", `Yes` = "Preeclampsia: Yes"))) +
+  xlab("Offspring Age") +
+  ylab("Shannon Index") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 17),
+        axis.title.y = element_text(size = 17),
+        axis.text.x = element_text(size = 12),
+        legend.title = element_text(size = 20),
+        legend.text = element_text(size = 20),
+        strip.text = element_text(size = 17))
+
+# Create the Csection plot for PE
+plot4 <- ggplot(cseccc[cseccc$alpha_shan!=0,], aes(x = Time, y = alpha_shan, col = Csection)) +
+  geom_boxplot() +
+  facet_wrap(~sPTB, labeller = as_labeller(c(`No` = "Spontaneous Preterm Birth: No", `Yes` = "Spontaneous Preterm Birth: Yes"))) +
+  xlab("Offspring Age") +
+  ylab("Shannon Index") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 17),
+        axis.title.y = element_text(size = 17),
+        axis.text.x = element_text(size = 12),
+        legend.position = "none",
+        strip.text = element_text(size = 17))
+
+plot3 <- plot3 + scale_color_brewer(palette = "Dark2", name = "Vaginal Delivery", labels = c("Yes", "No"))
+plot4 <- plot4 + scale_color_brewer(palette = "Dark2", name = "Vaginal Delivery", labels = c("Yes", "No"))
+
+#arrange grid
+grid1 <- ggarrange(plot1, plot2, ncol=2, common.legend = TRUE, legend = "top", labels = c("A", "B"),
+                   font.label = list(size=17))
+grid2 <- ggarrange(plot3, plot4, ncol=2, common.legend = TRUE, legend = "top", labels = c("C", "D"),
+                   font.label = list(size=17))
+
+plot_final <- grid.arrange(grid1, grid2, nrow=2)
+plot_final
+```
