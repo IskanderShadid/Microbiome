@@ -178,13 +178,7 @@ meta <- merge(epi1, stooldate, by="vid", all.x=TRUE)
 ### for 7 subjects, birthdate and stool collection date missing
 ### use Excel sheet from Leanna to add these dates
 meta$childm3ffdate <- as.character(meta$childm3ffdate)
-meta$childm3ffdate[meta$vid == "319874"] <- "06/21/2011"
-meta$childm3ffdate[meta$vid == "326992"] <- "06/17/2011"
-meta$childm3ffdate[meta$vid == "347595"] <- "02/29/2012"
-meta$childm3ffdate[meta$vid == "357032"] <- "06/15/2011"
-meta$childm3ffdate[meta$vid == "371573"] <- "04/13/2011"
-meta$childm3ffdate[meta$vid == "380436"] <- "10/30/2011"
-meta$childm3ffdate[meta$vid == "382772"] <- "09/13/2011"
+
 
 # Create an age variable (stool sample collection date minus delivery date)
 meta$stooldate<-as.Date(paste(meta$childm3ffdate), format = "%m/%d/%Y")
